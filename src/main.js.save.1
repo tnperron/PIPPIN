@@ -1,0 +1,104 @@
+import { Relay } from "nostr-tools";
+
+
+
+// Hard-coded relay URL
+const relayURL = "wss://iajrgokkjnfq55gnuubol7kvvfd7luvfd3qpuuxf4pxtkl737vynzjad.local"; // Replace with your relay URL
+const notesSection = document.getElementById("notes");
+
+async function fetchNotes() {
+  const relay = new Relay(relayURL);
+
+  try {
+    await relay.connect();
+    console.log(`Connected to relay: ${relayURL}`);
+
+    // Log all incoming WebSocket messages for debugging
+    relay.ws.addEventListener("message", (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        console.log("Incoming WebSocket message:", data);
+
+        // Check if the message contains an error
+        if (data.kind === "error") {
+          console.error("Relay error message:", data);
+        }
+      } catch (error) {
+        console.error("Error parsing WebSocket message:", error);
+      }
+    });
+
+
+    // Authenticate using NIP-42 and NIP-07
+    await authenticateRelay(relay);
+
+    // Subscribe to Kind 20 notes
+    const subscription = relay.subscribe([{ kinds: [1] }]);
+
+    subscription.on("event", (event) => {
+      console.log("New note received:", event);
+      displayNote(event);
+    });
+
+    subscription.on("eose", () => {
+      console.log("End of stored events");
+      if (notesSection.children.length === 0) {
+        notesSection.innerHTML = "<p>No notes found.</p>";
+      }
+    });
+  } catch (error) {
+    console.error("Error connecting to relay:", error);
+    notesSection.innerHTML = "<p>Failed to connect to relay.</p>";
+  }
+}
+
+async function authenticateRelay(relay) {
+  return new Promise((resolve, reject) => {
+    // Listen to raw WebSocket messages
+    relay.ws.addEventListener("message", async (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        // Check if the message is an AUTH challenge
+        if (data.kind === 22242 && data.tags.some((tag) => tag[0] === "challenge")) {
+          const challenge = data.tags.find((tag) => tag[0] === "challenge")[1];
+          console.log("Authentication challenge received:", challenge);
+
+          // Use the Alby extension to fetch the public key
+          if (!window.nostr) {
+            throw new Error("NIP-07 signing extension not found.");
+          }
+          const publicKey = await window.nostr.getPublicKey();
+          console.log("Public key retrieved from extension:", publicKey);
+
+          // Prepare the authentication event
+          const authEvent = {
+            kind: 22242,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [["relay", relay.url], ["challenge", challenge]],
+            content: "",
+            pubkey: publicKey,
+          };
+
+          // Hash and sign the authentication event using the extension
+          authEvent.id = getEventHash(authEvent);
+          authEvent.sig = await window.nostr.signEvent(authEvent);
+
+          // Send the signed authentication event back to the relay
+          relay.publish(authEvent);
+          console.log("Authentication event sent:", authEvent);
+
+          resolve(); // Resolve once authentication is complete
+        }
+      } catch (error) {
+        console.error("Error during authentication:", error);
+        reject(error);
+      }
+    });
+
+    relay.ws.addEventListener("error", (err) => {
+      console.error("Error during authentication:", err);
+      reject(err);
+    });
+  });
+}

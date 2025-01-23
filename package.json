@@ -1,0 +1,19 @@
+{
+  "name": "nostrclient.local.taylorperron.com",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.5"
+  },
+  "dependencies": {
+    "bech32": "^2.0.0",
+    "dotenv": "^16.4.7",
+    "nostr-tools": "^2.10.4"
+  }
+}
