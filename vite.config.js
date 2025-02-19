@@ -19,5 +19,18 @@ export default defineConfig({
                    .replace(/YOUR_IMAGE_URL_HERE/g, process.env.VITE_TWITTER_IMAGE);
       }
     }
-  ]
+  ],
+  optimizeDeps: {
+    include: ["nostr-tools"], // Ensure nostr-tools is bundled properly
+  },
+  build: {
+    outDir: "dist", // Output folder for production
+    rollupOptions: {
+      output: {
+        entryFileNames: "assets/[name].js",
+        chunkFileNames: "assets/[name].js",
+        assetFileNames: "assets/[name].[ext]"
+      }
+    }
+  }
 });
