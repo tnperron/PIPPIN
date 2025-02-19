@@ -24,6 +24,7 @@ dist-ssr
 *.sw?
 
 # secret stuff
+/keys
 .env
 ogfbthumb.png
 ogxthumb.png

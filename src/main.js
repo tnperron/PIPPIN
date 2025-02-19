@@ -1,6 +1,9 @@
 import { Relay, getEventHash } from "nostr-tools";
 import { decode } from "bech32";
-//require('dotenv').config();
+let globalRelay;
+let globalReactionSub;
+let globalRepostSub;
+let globalZapSub;
 
 const relayURL = import.meta.env.VITE_RELAY_URL;
 const blossomURL = import.meta.env.VITE_BLOSSOM_URL;
@@ -24,15 +27,11 @@ async function uploadPhoto(file) {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
 
-    // Ensure the Nostr signing extension is available
     if (!window.nostr) {
       throw new Error("NIP-07 signing extension not found.");
     }
 
-    // Get the user's public key from the signing extension
     const pubkey = await window.nostr.getPublicKey();
-
-    // Define an expiration time for the authorization (e.g., 5 minutes from now)
     const expirationTime = Math.floor(Date.now() / 1000) + 300;
 
     // Construct the authorization event
@@ -48,10 +47,8 @@ async function uploadPhoto(file) {
       pubkey,
     };
 
-    // Generate event hash
     authEvent.id = getEventHash(authEvent);
 
-    // Sign the event using Nostr extension
     const signedEvent = await window.nostr.signEvent(authEvent);
 
     // Extract only the signature from the signed event
@@ -244,111 +241,99 @@ async function initializeClient() {
     console.log("No user signed in. Displaying notes for the default account.");
     fetchDefaultNotes();
   } else {
-    console.log("User signed in. Displaying user's' feed.");
+    console.log("User signed in. Displaying user's feed.");
     fetchUserFeed(userPubKey);
   }
 }
 
-async function fetchDefaultNotes(limit = 10) {
+async function fetchDefaultNotes() {
   console.log("Fetching notes for the default account...");
 
-  const relay = new Relay(relayURL);
-  try {
-    await relay.connect();
     console.log("Relay connected for default account.");
 
-    const filters = [{ kinds: [20], authors: [defaultPubKey], until: lastSeenCreatedAt - 1, limit }];
+    const filters = [{ kinds: [20], authors: [defaultPubKey], until: lastSeenCreatedAt - 1, limit: 10 }];
 
-    const tempNotes = []; // Temporary array for this batch of notes
-    const subscription = relay.subscribe(filters, {});
-
-    subscription.onevent = (event) => {
-      console.log("Received default account note with created_at:", event.created_at);
-
-      // Add to tempNotes if not already present
-      if (!tempNotes.some(note => note.id === event.id)) {
-        console.log("Adding note to tempNotes:", event.id);
-        tempNotes.push(event);
-      } else {
-        console.log("Duplicate note skipped in tempNotes:", event.id);
+    const tempNotes = [];
+    const subscription = globalRelay.subscribe(filters, {
+      onevent: (event) => {
+        if (!tempNotes.some(note => note.id === event.id)) {
+          tempNotes.push(event);
+        } else {
+          console.log("Duplicate note skipped in tempNotes:", event.id);
+        }
+      },
+      oneose: async () => {
+        if (tempNotes.length > 0) {
+          loadedNotes = Array.from(
+            new Map([...loadedNotes, ...tempNotes].map(note => [note.id, note])).values()
+          );
+          loadedNotes.forEach(note => {
+            note.created_at = parseInt(note.created_at, 10);
+          });
+          loadedNotes.sort((a, b) => b.created_at - a.created_at);
+          tempNotes.sort((a, b) => b.created_at - a.created_at);
+          lastSeenCreatedAt = tempNotes[0].created_at;
+          await Promise.all(tempNotes.map(note => displayNote(note)));
+          sortNotesInDOM();
+          updateGlobalSubscriptions();
+        } else {
+          console.log("No new notes fetched for default account.");
+          sortNotesInDOM();
+        }
+        console.log("Finished fetching and rendering default account notes.");
       }
-    };
-
-    subscription.oneose = () => {
-      console.log("End of events for the default account.");
-
-      if (tempNotes.length > 0) {
-        // Deduplicate and merge tempNotes into loadedNotes
-        loadedNotes = Array.from(
-          new Map([...loadedNotes, ...tempNotes].map(note => [note.id, note])).values()
-        );
-        console.log("Deduplicated loadedNotes:", loadedNotes);
-
-        // Sort loadedNotes by created_at in descending order
-        loadedNotes.sort((a, b) => b.created_at - a.created_at);
-
-        // Update lastSeenCreatedAt to the oldest note in tempNotes
-        lastSeenCreatedAt = tempNotes[tempNotes.length - 1].created_at;
-        console.log("Updated lastSeenCreatedAt to:", lastSeenCreatedAt);
-
-        // Render only new notes
-        tempNotes.forEach(note => displayNote(note));
-      } else {
-        console.log("No new notes fetched for default account.");
-      }
-
-      subscription.unsub?.();
-      console.log("Finished fetching and rendering default account notes.");
-    };
-  } catch (error) {
-    console.error("Error fetching default account notes:", error);
-  }
+    });
 }
 
-async function fetchUserFeed(userPubKey, limit = 10) {
+async function fetchUserFeed() {
   console.log("Fetching user-specific feed...");
-
-  const relay = new Relay(relayURL);
-  try {
-    await relay.connect();
-
-    const filters = [{ kinds: [20], authors: [userPubKey], limit }];
+    //TODO: Fetch NIP-02 follow list for authors filter.
+    const filters = [{ kinds: [20], authors: [defaultPubKey], until: lastSeenCreatedAt - 1, limit: 10 }];
     console.log("Filters for user feed:", filters);
 
-    const subscription = relay.subscribe(filters, {});
-    subscription.onevent = (event) => {
-      if (!loadedNotes.some(note => note.id === event.id)) {
-        loadedNotes.push(event);
-        console.log("User note received:", event);
+    const tempNotes = [];
+    const subscription = globalRelay.subscribe(filters, {
+      onevent: (event) => {
+        if (!tempNotes.some(note => note.id === event.id)) {
+          tempNotes.push(event);
+        } else {
+          console.log("Duplicate note skipped in tempNotes:", event.id);
+        }
+      },
+      oneose: async () => {
+        if (tempNotes.length > 0) {
+          loadedNotes = Array.from(
+            new Map([...loadedNotes, ...tempNotes].map(note => [note.id, note])).values()
+          );
+          loadedNotes.forEach(note => {
+            note.created_at = parseInt(note.created_at, 10);
+          });
+          loadedNotes.sort((a, b) => b.created_at - a.created_at);
+          tempNotes.sort((a, b) => b.created_at - a.created_at);
+          lastSeenCreatedAt = tempNotes[0].created_at;
+          await Promise.all(tempNotes.map(note => displayNote(note)));
+          sortNotesInDOM();
+          updateGlobalSubscriptions();
+        } else {
+          console.log("No new notes fetched for user feed.");
+          sortNotesInDOM();
+        }
+        console.log("Finished fetching and rendering user feed notes.");
       }
-    };
-
-    subscription.oneose = () => {
-      // Sort and render notes
-      loadedNotes.sort((a, b) => b.created_at - a.created_at);
-      renderNotes();
-      subscription.unsub();
-    };
-  } catch (error) {
-    console.error("Error fetching user-specific feed:", error);
-  }
+    });
 }
 
 let lastSeenCreatedAt = Math.floor(Date.now() / 1000);
-let loadedNotes = []; // Array to store all loaded notes
+let loadedNotes = [];
 let isFetching = false;
 async function fetchNotes(pubKey, limit = 10) {
-  if (isFetching) return; // Prevent overlapping fetch calls
+  if (isFetching) return;
   isFetching = true;
-
-  const relay = new Relay(relayURL);
-  try {
-    await relay.connect();
 
     const filters = [{ kinds: [20], until: lastSeenCreatedAt - 1, limit }];
 
-    const tempNotes = []; // Temporary array for the current batch
-    const subscription = relay.subscribe(filters, {});
+    const tempNotes = [];
+    const subscription = globalRelay.subscribe(filters, {});
 
     subscription.onevent = (event) => {
 
@@ -359,53 +344,43 @@ async function fetchNotes(pubKey, limit = 10) {
       }
     };
 
-    subscription.oneose = () => {
+    subscription.oneose = async() => {
 
       if (tempNotes.length > 0) {
         // Deduplicate and merge tempNotes into loadedNotes
         loadedNotes = Array.from(
           new Map([...loadedNotes, ...tempNotes].map(note => [note.id, note])).values()
         );
-
+        
+        // Check if loadedNotes is a number
+        loadedNotes.forEach(note => console.log(note.created_at, typeof note.created_at));
+        
+        // Make sure created_at is a number and not a string
+        loadedNotes.forEach(note => {
+          note.created_at = parseInt(note.created_at, 10);
+        });
+        
         // Sort loadedNotes by created_at in descending order
         loadedNotes.sort((a, b) => b.created_at - a.created_at);
 
         // Update lastSeenCreatedAt to the oldest note in tempNotes
-        lastSeenCreatedAt = tempNotes[tempNotes.length - 1].created_at;
+        tempNotes.sort((a, b) => b.created_at - a.created_at);
+        lastSeenCreatedAt = tempNotes[0].created_at;
 
         // Render only new notes
-        tempNotes.forEach(note => displayNote(note));
+        await Promise.all(tempNotes.map(note => displayNote(note)));
+
+        // Sort the notes in the DOM
+        sortNotesInDOM();
+
+        updateGlobalSubscriptions();  // Refresh the global subscriptions with new note IDs.
       } else {
       }
 
-      subscription.unsub();
+      subscription.close();
     };
-  } catch (error) {
-    console.error("Error during relay connection or subscription:", error);
-  }
 
   isFetching = false;
-}
-
-function renderNotes() {
-  loadedNotes.forEach((note) => {
-    if (!document.querySelector(`.note[data-note-id="${note.id}"]`)) {
-      displayNote(note);
-    } else {
-    }
-  });
-}
-
-let oldestNote = null;
-// Update oldestNote whenever new notes are fetched
-function updateOldestNote() {
-  if (loadedNotes.length > 0) {
-    const oldest = loadedNotes[loadedNotes.length - 1];
-    oldestNote = oldest.created_at; // Use the `created_at` timestamp
-  } else {
-    console.warn("No notes found in loadedNotes to update oldestNote.");
-    oldestNote = null;
-  }
 }
 
 function setupInfiniteScroll() {
@@ -422,76 +397,24 @@ function setupInfiniteScroll() {
   });
 }
 
-async function displayNote(note) {
+function displayNote(note) {
   
+  // Ensure created_at is a number.
+  note.created_at = parseInt(note.created_at, 10);
+
+  // Synchronously create a basic container for the note.
   const notesSection = document.getElementById("notes");
-
-  // Log the container
-  if (!notesSection) {
-    console.error("notesSection is missing. Ensure it exists in the DOM.");
-    return;
-  }
-
-  // Create a container for the note
   const noteDiv = document.createElement("div");
   noteDiv.className = "note";
+  
+  // Save the note’s creation time and ID as data attributes.
   noteDiv.dataset.createdAt = note.created_at;
+  noteDiv.dataset.noteId = note.id;
 
-  // Fetch profile metadata
-  const pubkey = note.pubkey;
-  const profile = await fetchProfile(pubkey);
-  const { picture, displayName, nip05 } = profile;
-
-  // Create the header section
+  // Synchronously add the timestamp and content.
   const headerDiv = document.createElement("div");
   headerDiv.className = "note-header";
-
-  // Profile picture
-  const profileImg = document.createElement("img");
-  profileImg.src = picture || "default-profile.png"; // Fallback image if no picture
-  profileImg.alt = `${displayName || pubkey}'s profile picture`;
-  profileImg.className = "profile-pic";
-
-  // Display name and NIP-05 container
-  const nameContainer = document.createElement("div");
-  nameContainer.className = "name-container";
-
-  const nameSpan = document.createElement("span");
-  nameSpan.textContent = displayName || pubkey;
-  nameSpan.className = "display-name";
-
-  const nip05Span = document.createElement("span");
-  nip05Span.textContent = nip05 ? `@${nip05}` : "";
-  nip05Span.className = "nip05-status";
-  if (nip05) nip05Span.style.color = "green"; // Indicate verified status with color
-
-  nameContainer.appendChild(nameSpan);
-  nameContainer.appendChild(nip05Span);
-
-  // Container for profile and name
-  const profileContainer = document.createElement("div");
-  profileContainer.className = "profile-container";
-  profileContainer.appendChild(profileImg);
-  profileContainer.appendChild(nameContainer);
-
-  // Date/time stamp
-  const timestamp = new Date(note.created_at * 1000);
-  const formattedTime = new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(timestamp);
-  const timeSpan = document.createElement("div");
-  const [date, time] = formattedTime.split(", ");
-  timeSpan.innerHTML = `<span class="timestamp-date">${date}</span><span class="timestamp-time">${time}</span>`;
-  timeSpan.className = "timestamp";
-
-  // Append elements to header
-  headerDiv.appendChild(profileContainer);
-  headerDiv.appendChild(timeSpan);
+  headerDiv.textContent = new Date(note.created_at * 1000).toLocaleString();
   noteDiv.appendChild(headerDiv);
 
   // Add the content text
@@ -583,29 +506,13 @@ async function displayNote(note) {
   reactionCount.textContent = "0";
 
   likeButton.appendChild(reactionCount);
-  likeButton.onclick = async () => {
-    await reactToNote(note.id);
-    reactionCount.textContent = parseInt(reactionCount.textContent) + 1;
-  };
-
-  // Add the button to the note
-  noteDiv.appendChild(likeButton);
+  actionsDiv.appendChild(likeButton);
 
   // Append the note to the notes section
   notesSection.appendChild(noteDiv);
 
-  // Fetch existing reactions for the note
-  const relay = new Relay("wss://iajrgokkjnfq55gnuubol7kvvfd7luvfd3qpuuxf4pxtkl737vynzjad.local");
-  await relay.connect();
-
-  const sub = relay.subscribe([{ kinds: [7], "#e": [note.id] }], {});
-  sub.onevent = (event) => {
-    reactionCount.textContent = parseInt(reactionCount.textContent) + 1;
-  };
-
-  sub.oneose = () => {
-    sub.unsub();
-  };
+  // Now, kick off asynchronous updates.
+  updateNoteDetails(note, noteDiv);
 
   // Create the repost button
   const repostButton = document.createElement("button");
@@ -615,8 +522,9 @@ async function displayNote(note) {
   const repostCount = document.createElement("span");
   repostCount.className = "repost-count";
   repostCount.textContent = "0";
-
   repostButton.appendChild(repostCount);
+  actionsDiv.appendChild(repostButton);
+  
   repostButton.onclick = async () => {
     try {
       await repostNote(note.id);
@@ -639,6 +547,7 @@ async function displayNote(note) {
   commentCount.textContent = "0";
 
   commentButton.appendChild(commentCount);
+  actionsDiv.appendChild(commentButton);
   commentButton.onclick = () => {
     openCommentPopup(note.id);
   };
@@ -698,29 +607,21 @@ async function displayNote(note) {
     // Add popup to the body
     document.body.appendChild(popupDiv);
 
-    // Initialize relay and connect with retry logic
-    const relay = new Relay(relayURL);
-    try {
-        await connectWithRetry(relay); // Ensure relay connection
-
         // Subscribe to comments for the given note ID
-        const sub = relay.subscribe([{ kinds: [1], "#e": [noteId] }], {});
+        const sub = globalRelay.subscribe([{ kinds: [1], "#e": [noteId] }], {});
 
         // Fetch and display existing comments for the note
-        sub.onevent = async (event) => {
+        sub.on("event", async (event) => {
             // Check if the comment is already displayed to avoid duplicates
             if (!document.getElementById(`comment-${event.id}`)) {
                 const profile = await fetchProfile(event.pubkey);
                 displayComment(event, profile, commentsSection);
             }
-        };
+        });
 
-        sub.oneose = () => {
-            sub.unsub();
-        };
-    } catch (error) {
-        console.error("Failed to connect or subscribe to relay:", error);
-    }
+        sub.on("eose", () => {
+            sub.close();
+        });
 }
 
   //Zap button
@@ -733,15 +634,13 @@ async function displayNote(note) {
   zapCount.textContent = "0"; // Default zap count
 
   zapButton.appendChild(zapCount);
+  actionsDiv.appendChild(zapButton);
   
   async function fetchLightningAddress(pubkey) {
-    try {
-      const relay = new Relay(relayURL);
-      await relay.connect();
   
-      const sub = relay.subscribe([{ kinds: [0], authors: [pubkey] }], {});
+      const sub = globalRelay.subscribe([{ kinds: [0], authors: [pubkey] }], {});
       return new Promise((resolve, reject) => {
-        sub.onevent = (event) => {
+        sub.on("event", (event) => {
           const profile = JSON.parse(event.content);
           const lightningAddress = profile.lud16 || atob(profile.lud06 || "");
           if (lightningAddress) {
@@ -749,21 +648,17 @@ async function displayNote(note) {
           } else {
             reject("No Lightning Address found in profile.");
           }
-          sub.unsub();
-        };
-        sub.oneose = () => {
+          sub.close();
+        });
+        sub.on("eose", () => {
           reject("Profile not found or incomplete.");
-          sub.unsub();
-        };
+          sub.close();
+        });
       });
-    } catch (error) {
-      console.error("Error fetching Lightning Address:", error);
-      throw error;
     }
-  }
 
   zapButton.onclick = async () => {
-    const zapAmount = 21; // Hard-coded zap amount in sats
+    const zapAmount = zapAmount;
   
     try {
       const pubkey = await window.nostr.getPublicKey();
@@ -810,39 +705,185 @@ async function displayNote(note) {
     }
   };
 
-  // Append the buttons to the actions container
-  actionsDiv.appendChild(likeButton);
-  actionsDiv.appendChild(repostButton);
-  actionsDiv.appendChild(commentButton);
-  actionsDiv.appendChild(zapButton);
-
   // Add the actions container to the note
   noteDiv.appendChild(actionsDiv);
 
   // Fetch existing reposts for the note
-  const repostSub = relay.subscribe([{ kinds: [6], "#e": [note.id] }], {}); // Kind 6 for reposts
-  repostSub.onevent = (event) => {
-    repostCount.textContent = parseInt(repostCount.textContent) + 1;
-  };
-  repostSub.oneose = () => {
-    repostSub.unsub();
-  };
-
-  const zapRelay = new Relay(relayURL);
-  await zapRelay.connect();
-
-  const zapSub = zapRelay.subscribe([{ kinds: [9735], "#e": [note.id] }], {});
-  zapSub.onevent = (event) => {
-    const amountTag = event.tags.find((tag) => tag[0] === "amount");
-    if (amountTag) {
-      zapCount.textContent =
-        parseInt(zapCount.textContent) + parseInt(amountTag[1]);
+  const repostSub = globalRelay.subscribe([{ kinds: [6], "#e": [note.id] }], {
+    onEvent: (event) => {
+      repostCount.textContent = parseInt(repostCount.textContent) + 1;
+    },
+    onEose: () => {
+      repostSub.unsubscribe();
     }
-  };
+  });
+}
 
-  zapSub.oneose = () => {
-    zapSub.unsub();
-  };
+function updateGlobalReactionSubscription() {
+  // Get the list of note IDs from your global loadedNotes array.
+  const noteIds = loadedNotes.map(note => note.id);
+  
+  // Unsubscribe from the previous reaction subscription, if it exists.
+  if (globalReactionSub && typeof globalReactionSub.unsubscribe === "function") {
+    globalReactionSub.unsubscribe();
+  }
+  
+  // Create a filter for kind 7 events that mention any of these note IDs.
+  const filters = [{ kinds: [7], "#e": noteIds }];
+  
+  // Create the subscription using the global relay.
+  globalReactionSub = globalRelay.subscribe(filters, {
+    onEvent: (event) => {
+      // Extract the note ID from the event's e-tag.
+      const noteIdTag = event.tags.find(tag => tag[0] === "e");
+      if (!noteIdTag) return;
+      const noteId = noteIdTag[1];
+
+      // Find the corresponding note element in the DOM.
+      const noteDiv = document.querySelector(`.note[data-note-id="${noteId}"]`);
+      if (noteDiv) {
+        const reactionSpan = noteDiv.querySelector(".reaction-count");
+        if (reactionSpan) {
+          // Increment the reaction count.
+          reactionSpan.textContent = parseInt(reactionSpan.textContent) + 1;
+        }
+      }
+    },
+    onEose: () => {
+      console.log("globalReactionSub received eose");
+    }
+  });
+}
+
+function updateGlobalRepostSubscription() {
+  const noteIds = loadedNotes.map(note => note.id);
+  if (globalRepostSub && typeof globalRepostSub.unsubscribe === "function") {
+    globalRepostSub.unsubscribe();
+  }
+  
+  const filters = [{ kinds: [6], "#e": noteIds }];
+  globalRepostSub = globalRelay.subscribe(filters, {
+    onEvent: (event) => {
+      const noteIdTag = event.tags.find(tag => tag[0] === "e");
+      if (!noteIdTag) return;
+      const noteId = noteIdTag[1];
+      
+      const noteDiv = document.querySelector(`.note[data-note-id="${noteId}"]`);
+      if (noteDiv) {
+        const repostSpan = noteDiv.querySelector(".repost-count");
+        if (repostSpan) {
+          repostSpan.textContent = parseInt(repostSpan.textContent) + 1;
+        }
+      }
+    },
+    onEose: () => {
+      console.log("globalRepostSub received eose");
+    }
+  });
+}
+
+function updateGlobalZapSubscription() {
+  const noteIds = loadedNotes.map(note => note.id);
+  if (globalZapSub && typeof globalZapSub.unsubscribe === "function") {
+    globalZapSub.unsubscribe();
+  }
+  
+  const filters = [{ kinds: [9735], "#e": noteIds }];
+  globalZapSub = globalRelay.subscribe(filters, {
+    onEvent: (event) => {
+      const noteIdTag = event.tags.find(tag => tag[0] === "e");
+      if (!noteIdTag) return;
+      const noteId = noteIdTag[1];
+      
+      const noteDiv = document.querySelector(`.note[data-note-id="${noteId}"]`);
+      if (noteDiv) {
+        const zapSpan = noteDiv.querySelector(".zap-count");
+        if (zapSpan) {
+          zapSpan.textContent = parseInt(zapSpan.textContent) + 1;
+        }
+      }
+    },
+    onEose: () => {
+      console.log("globalZapSub received eose");
+    }
+  });
+}
+
+function updateGlobalSubscriptions() {
+  updateGlobalReactionSubscription();
+  updateGlobalRepostSubscription();
+  updateGlobalZapSubscription();
+}
+
+async function updateNoteDetails(note, noteDiv) {
+  const pubkey = note.pubkey;
+  try {
+    const profile = await fetchProfile(pubkey);
+    const { picture, displayName, nip05 } = profile;
+
+    // Now update the header with profile details.
+    const headerDiv = noteDiv.querySelector(".note-header");
+    headerDiv.innerHTML = ""; // Remove the placeholder text
+
+    // Create profile image.
+    const profileImg = document.createElement("img");
+    profileImg.src = picture || "default-profile.png";
+    profileImg.alt = `${displayName || pubkey}'s profile picture`;
+    profileImg.className = "profile-pic";
+
+    // Create container for display name and verified status.
+    const nameContainer = document.createElement("div");
+    nameContainer.className = "name-container";
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = displayName || pubkey;
+    nameSpan.className = "display-name";
+
+    const nip05Span = document.createElement("span");
+    nip05Span.textContent = nip05 ? `@${nip05}` : "";
+    nip05Span.className = "nip05-status";
+    if (nip05) nip05Span.style.color = "green";
+
+    nameContainer.appendChild(nameSpan);
+    nameContainer.appendChild(nip05Span);
+
+    // Combine profile info.
+    const profileContainer = document.createElement("div");
+    profileContainer.className = "profile-container";
+    profileContainer.appendChild(profileImg);
+    profileContainer.appendChild(nameContainer);
+
+    // Create a detailed timestamp if desired.
+    const detailedTimestamp = document.createElement("div");
+    detailedTimestamp.className = "timestamp";
+    const formattedTime = new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(note.created_at * 1000));
+    detailedTimestamp.textContent = formattedTime;
+
+    // Append the new details.
+    headerDiv.appendChild(profileContainer);
+    headerDiv.appendChild(detailedTimestamp);
+  } catch (error) {
+    console.error("Error updating note details:", error);
+  }
+}
+
+function sortNotesInDOM() {
+  const notesSection = document.getElementById("notes"); // Select the notes section
+  const notesArray = Array.from(notesSection.children); // Convert children to an array
+
+  // Sort based on the numeric value of data-created-at (newest first)
+  notesArray.sort((a, b) => parseInt(b.dataset.createdAt, 10) - parseInt(a.dataset.createdAt, 10));
+
+  // Clear and re-append the sorted notes
+  notesSection.innerHTML = ""; // Clear the section
+  notesArray.forEach(note => notesSection.appendChild(note)); // Append sorted notes
 }
 
 function displayComment(comment, profile, commentSection) {
@@ -923,35 +964,45 @@ function displayComment(comment, profile, commentSection) {
   commentSection.appendChild(commentDiv);
 }
 
+const profileCache = new Map();
 async function fetchProfile(pubkey) {
-  const relay = new Relay(relayURL);
-  await relay.connect();
-
+  if (profileCache.has(pubkey)) {
+    return profileCache.get(pubkey);
+  }
   return new Promise((resolve, reject) => {
-    const sub = relay.subscribe([{ kinds: [0], authors: [pubkey] }], {});
-    sub.onevent = (event) => {
-      const metadata = JSON.parse(event.content);
-      resolve({
-        picture: metadata.picture || null,
-        displayName: metadata.display_name || metadata.name || pubkey,
-        nip05: metadata.nip05 || null,
-      });
-      sub.unsub();
-    };
-
-    sub.oneose = () => {
-      resolve({
-        picture: null,
-        displayName: pubkey,
-        nip05: null,
-      });
-      sub.unsub();
-    };
-
-    sub.onfailed = (reason) => {
-      console.error("Subscription failed:", reason);
-      reject(reason);
-    };
+    const sub = globalRelay.subscribe(
+      [{ kinds: [0], authors: [pubkey] }],
+      {
+        onevent: (event) => {
+          try {
+            const metadata = JSON.parse(event.content);
+            const profile = {
+              picture: metadata.picture || null,
+              displayName: metadata.display_name || metadata.name || pubkey,
+              nip05: metadata.nip05 || null,
+            };
+            profileCache.set(pubkey, profile);
+            resolve(profile);
+          } catch (err) {
+            reject(err);
+          }
+        },
+        oneose: () => {
+          // If no event is received, resolve with defaults.
+          const profile = {
+            picture: null,
+            displayName: pubkey,
+            nip05: null,
+          };
+          profileCache.set(pubkey, profile);
+          resolve(profile);
+        },
+        onerror: (err) => {
+          console.error("Profile subscription failed:", err);
+          reject(err);
+        }
+      }
+    );
   });
 }
 
@@ -996,7 +1047,7 @@ async function repostNote(noteId) {
   try {
     const pubkey = await window.nostr.getPublicKey();
     const event = {
-      kind: 6, // Kind 6 for reposts
+      kind: 6,
       created_at: Math.floor(Date.now() / 1000),
       tags: [["e", noteId], ["p", pubkey]],
       content: "", // Empty content as per NIP-18
@@ -1025,24 +1076,20 @@ async function repostNote(noteId) {
 async function fetchComments(noteId, commentsSection) {
   commentsSection.innerHTML = "<p>Loading comments...</p>";
 
-  try {
-    const relay = new Relay(relayURL);
-    await relay.connect().then(() => {
-    }).catch((error) => {
-      console.error("Failed to connect to relay:", error);
-    });
-
     console.log("Note ID for comment subscription:", noteId);
-    const sub = relay.subscribe([{ kinds: [1], "#e": [noteId] }], {}); // Kind 1 with e-tag matching note ID
+    const sub = globalRelay.subscribe([{ kinds: [1], "#e": [noteId] }], {}); // Kind 1 with e-tag matching note ID
     console.log("Subscription created:", sub);
     commentsSection.innerHTML = ""; // Clear loading message
 
-    sub.onevent = (event) => {
+    sub.on("event", (event) => {
       if (event.kind === 1) { // Check if it's a comment event
         const noteId = event.tags.find(tag => tag[0] === "e")[1]; // Get note ID from tags
         updateCommentCount(noteId, parseInt(document.querySelector(`.comment-count[data-note-id="${noteId}"]`)?.textContent || 0) + 1);
       }
       
+      // Immediately unsubscribe after receiving data.
+      if (typeof sub.unsubscribe === "function") sub.unsubscribe();
+
       const commentDiv = document.createElement("div");
       commentDiv.className = "comment";
 
@@ -1054,20 +1101,22 @@ async function fetchComments(noteId, commentsSection) {
       addCommentActions(commentDiv, event);
 
       commentsSection.appendChild(commentDiv);
-    };
+    });
 
-    sub.oneose = () => sub.unsub();
+    sub.on("eose", () => {
     
     setTimeout(() => {
       if (commentSection.children.length === 0) {
         commentSection.innerHTML = "<p>No comments found.</p>";
       }
-    }, 3000);
-    
-  } catch (error) {
-    console.error("Error fetching comments:", error);
-    commentsSection.innerHTML = "<p>Failed to load comments.</p>";
-  }
+      }, 3000)
+    });
+    if (typeof sub.unsubscribe === "function") sub.unsubscribe();
+
+  sub.on("failed", (reason) => {
+    console.error("Subscription failed:", reason);
+    reject(reason);
+  });
 }
 
 async function postComment(noteId, content) {
@@ -1207,11 +1256,20 @@ async function zapComment(commentId) {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  initializeClient();
-  await fetchNotes(10).then(() => {
-    updateOldestNote();
-  });
-  setupInfiniteScroll(); // Set up infinite scroll for dynamic loading
-});
+  console.log("Page loaded. Initializing client...");
+  
+  // Create and connect the global relay instance
+  globalRelay = new Relay(relayURL);
+  try {
+    await globalRelay.connect();
+    console.log("Global relay connected successfully.");
+  } catch (error) {
+    console.error("Failed to connect global relay:", error);
+  }
 
-fetchNotes();
+  // Initialize the client and determine the starting feed
+  await initializeClient();
+
+  // Set up infinite scroll after initializing the feed
+  setupInfiniteScroll();
+});
