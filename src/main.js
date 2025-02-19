@@ -1,4 +1,5 @@
-import { Relay, getEventHash } from "nostr-tools";
+import * as nostrTools from "nostr-tools";
+const { Relay, getEventHash } = nostrTools;
 import { decode } from "bech32";
 let globalRelay;
 let globalReactionSub;

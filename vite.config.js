@@ -21,16 +21,21 @@ export default defineConfig({
     }
   ],
   optimizeDeps: {
-    include: ["nostr-tools"], // Ensure nostr-tools is bundled properly
+    include: ["nostr-tools"], // Ensure nostr-tools is pre-bundled
   },
   build: {
-    outDir: "dist", // Output folder for production
+    outDir: "dist",
     rollupOptions: {
-      output: {
-        entryFileNames: "assets/[name].js",
-        chunkFileNames: "assets/[name].js",
-        assetFileNames: "assets/[name].[ext]"
-      }
+      external: [], // Forces ALL dependencies to be bundled
+    },
+    commonjsOptions: {
+      include: [/node_modules/], // Ensure dependencies in node_modules are processed
+      transformMixedEsModules: true, // Allow mixed ESM/CJS modules
+    },
+  },
+  resolve: {
+    alias: {
+      "nostr-tools": "/node_modules/nostr-tools", // Force resolution
     }
   }
 });
