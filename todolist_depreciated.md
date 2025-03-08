@@ -1,3 +1,5 @@
+THIS FILE IS DEPRECIATED, SEE TODO LIST IN README FILE FOR CURRENT TODO
+
 1: Refer to the NIP-68 doc page for event formatting and requirements.
 ✅ 2: Include all imeta tag info except for title and fallbacks.
     In Olas it looks like the "alt" tag is outside the "imeta" tag.
